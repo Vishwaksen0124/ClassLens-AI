@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000" viewBox="0 0 1600 1000" role="img" aria-labelledby="title desc">
+  <title id="title">ClassLens AWS architecture</title>
+  <desc id="desc">Streamlit and FastAPI run on ECS Fargate behind an Application Load Balancer. FastAPI stores videos and results in S3, job state in DynamoDB, and sends jobs to SQS. A single-concurrency Lambda worker uses FFmpeg and OpenCV, Amazon Transcribe, EventBridge, and the same Bedrock Mantle Gemma model used by the API. The API serves chat and DOCX documents.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#f7fbff"/><stop offset="1" stop-color="#edf3fa"/></linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%"><feDropShadow dx="0" dy="5" stdDeviation="7" flood-color="#18324a" flood-opacity=".12"/></filter>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto"><path d="M1 1L11 6 1 11Z" fill="#61758b"/></marker>
+    <marker id="arrowOrange" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto"><path d="M1 1L11 6 1 11Z" fill="#d87519"/></marker>
+    <style>
+      text{font-family:Inter,Segoe UI,Arial,sans-serif;fill:#18324a}.title{font-size:34px;font-weight:750}.subtitle{font-size:16px;fill:#60758a}.groupTitle{font-size:19px;font-weight:700;fill:#31516e}.boxTitle{font-size:17px;font-weight:700}.boxSub{font-size:13px;fill:#536c82}.small{font-size:12px;fill:#60758a}.pill{font-size:12px;font-weight:650}.line{fill:none;stroke:#61758b;stroke-width:2.5;marker-end:url(#arrow)}.lineO{fill:none;stroke:#d87519;stroke-width:2.7;marker-end:url(#arrowOrange)}.dash{stroke-dasharray:7 6}
+    </style>
+  </defs>
+  <rect width="1600" height="1000" rx="24" fill="url(#bg)"/>
+  <text x="64" y="72" class="title">ClassLens · AWS architecture</text>
+  <text x="64" y="103" class="subtitle">Lecture video analysis, grounded chat, and Word document generation · us-east-2</text>
+  <rect x="1248" y="47" width="282" height="40" rx="20" fill="#fff3e7" stroke="#e4a361"/>
+  <circle cx="1272" cy="67" r="7" fill="#d87519"/><text x="1288" y="72" class="pill" fill="#82450d">ONE MODEL · GEMMA 4 31B</text>
+
+  <!-- Client and web tier -->
+  <rect x="54" y="145" width="1492" height="180" rx="20" fill="#ffffff" stroke="#cbd9e6" stroke-width="1.5"/>
+  <text x="78" y="178" class="groupTitle">Web experience</text>
+  <rect x="88" y="207" width="180" height="78" rx="14" fill="#eff6fc" stroke="#94b5d2" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="178" y="239" text-anchor="middle" class="boxTitle">User / browser</text><text x="178" y="262" text-anchor="middle" class="boxSub">Video upload · chat · DOCX</text>
+  <rect x="380" y="194" width="470" height="104" rx="16" fill="#f3f8fd" stroke="#86a9c8" stroke-width="1.5"/>
+  <text x="402" y="221" class="boxTitle">Application Load Balancer</text><text x="402" y="245" class="boxSub">Public HTTP entry · routes UI and API traffic</text>
+  <rect x="402" y="261" width="156" height="24" rx="12" fill="#dcebf7"/><text x="480" y="278" text-anchor="middle" class="pill">Streamlit :8501</text>
+  <rect x="574" y="261" width="150" height="24" rx="12" fill="#dcebf7"/><text x="649" y="278" text-anchor="middle" class="pill">FastAPI :8000</text>
+  <rect x="963" y="190" width="530" height="116" rx="16" fill="#eaf4fb" stroke="#6f9dbf" stroke-width="1.5"/>
+  <text x="990" y="219" class="boxTitle">Amazon ECS · AWS Fargate</text><text x="990" y="243" class="boxSub">One service task runs the Streamlit frontend and FastAPI backend</text>
+  <text x="990" y="271" class="boxSub">FastAPI: upload validation, job state, chat, agent orchestration</text>
+  <text x="990" y="291" class="boxSub">Streamlit: progress, assessment, conversation, document download</text>
+  <path d="M268 246H372" class="line"/><path d="M850 246H955" class="line"/>
+
+  <!-- Data/queue plane -->
+  <rect x="54" y="357" width="930" height="435" rx="20" fill="#ffffff" stroke="#cbd9e6" stroke-width="1.5"/>
+  <text x="78" y="392" class="groupTitle">Asynchronous lecture processing</text>
+  <rect x="95" y="445" width="210" height="90" rx="14" fill="#fff5e9" stroke="#e7a55f" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="200" y="478" text-anchor="middle" class="boxTitle">Amazon S3</text><text x="200" y="501" text-anchor="middle" class="boxSub">Private video, transcript,</text><text x="200" y="520" text-anchor="middle" class="boxSub">frames, reports, DOCX</text>
+  <rect x="365" y="430" width="205" height="80" rx="14" fill="#fff5e9" stroke="#e7a55f" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="467" y="462" text-anchor="middle" class="boxTitle">Amazon DynamoDB</text><text x="467" y="486" text-anchor="middle" class="boxSub">Job status · TODOs · chat history</text>
+  <rect x="365" y="558" width="205" height="80" rx="14" fill="#fff5e9" stroke="#e7a55f" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="467" y="590" text-anchor="middle" class="boxTitle">Amazon SQS</text><text x="467" y="614" text-anchor="middle" class="boxSub">Job queue · DLQ · one at a time</text>
+  <rect x="654" y="462" width="280" height="146" rx="16" fill="#f5f1fb" stroke="#aa96ce" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="794" y="493" text-anchor="middle" class="boxTitle">AWS Lambda worker</text><text x="794" y="518" text-anchor="middle" class="boxSub">Container image · reserved concurrency 1</text>
+  <line x1="690" y1="535" x2="898" y2="535" stroke="#d6cce8"/>
+  <text x="794" y="558" text-anchor="middle" class="boxSub">FFmpeg duration/audio/frame extraction</text><text x="794" y="582" text-anchor="middle" class="boxSub">OpenCV pHash slide deduplication</text>
+  <path d="M305 468H355" class="lineO"/><text x="330" y="450" text-anchor="middle" class="small">upload</text>
+  <path d="M305 515C330 515 335 470 355 470" class="line dash"/>
+  <path d="M467 510V550" class="line"/><text x="480" y="541" class="small">enqueue</text>
+  <path d="M570 598H640" class="line"/>
+  <path d="M654 482C613 482 616 470 578 470" class="line dash"/>
+  <path d="M654 588C620 588 615 603 578 603" class="line dash"/>
+  <rect x="95" y="675" width="325" height="72" rx="14" fill="#f7fafc" stroke="#d7e2eb"/>
+  <text x="116" y="704" class="boxTitle">Amazon Transcribe</text><text x="116" y="729" class="boxSub">Timestamped transcript is written to S3</text>
+  <rect x="458" y="675" width="300" height="72" rx="14" fill="#f7fafc" stroke="#d7e2eb"/>
+  <text x="480" y="704" class="boxTitle">Amazon EventBridge</text><text x="480" y="729" class="boxSub">Completion event resumes the queued job</text>
+  <path d="M698 608C630 632 475 640 385 675" class="lineO"/>
+  <path d="M420 711H448" class="line dash"/>
+  <path d="M608 675C608 656 586 644 570 622" class="line dash"/>
+
+  <!-- AI -->
+  <rect x="1020" y="357" width="526" height="435" rx="20" fill="#ffffff" stroke="#cbd9e6" stroke-width="1.5"/>
+  <text x="1045" y="392" class="groupTitle">Shared AI and application services</text>
+  <rect x="1070" y="438" width="425" height="122" rx="18" fill="#fff2e3" stroke="#df8c35" stroke-width="2" filter="url(#shadow)"/>
+  <circle cx="1110" cy="480" r="20" fill="#d87519"/><path d="M1100 481l7 7 14-16" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="1144" y="477" class="boxTitle">Amazon Bedrock Mantle</text><text x="1144" y="504" class="boxTitle">Gemma 4 · 31B</text><text x="1144" y="531" class="boxSub">Single model for assessment, chat, and DOCX agent</text>
+  <rect x="1070" y="594" width="425" height="75" rx="14" fill="#f3f8fd" stroke="#9bb9d2"/>
+  <text x="1092" y="623" class="boxTitle">Assessment and scoring</text><text x="1092" y="648" class="boxSub">Strands sends transcript + sampled frames; Python calculates scores</text>
+  <rect x="1070" y="688" width="425" height="70" rx="14" fill="#f3f8fd" stroke="#9bb9d2"/>
+  <text x="1092" y="716" class="boxTitle">Chat and document agent</text><text x="1092" y="741" class="boxSub">Evidence-grounded Q&amp;A · plan/execute · render polished DOCX</text>
+  <path d="M934 508H1060" class="lineO"/><path d="M963 271C1075 330 1290 315 1290 428" class="lineO"/>
+  <path d="M1290 560V585" class="lineO"/><path d="M1290 669V679" class="lineO"/>
+  <path d="M1070 725C1015 725 1014 260 963 260" class="line dash"/>
+  <path d="M1020 635C980 635 975 493 942 493" class="line dash"/>
+
+  <rect x="54" y="833" width="1492" height="106" rx="18" fill="#18324a"/>
+  <text x="84" y="870" font-size="15" font-weight="700" fill="#fff">REQUEST LIFECYCLE</text>
+  <text x="84" y="903" font-size="14" fill="#dbe8f2">Upload → S3 + DynamoDB → SQS → Lambda → Transcribe + frames → Gemma analysis → saved report → chat / DOCX</text>
+  <text x="1515" y="973" text-anchor="end" class="small">ClassLens · deployed web tier: ECS Fargate · worker/data tier: AWS serverless</text>
+</svg>

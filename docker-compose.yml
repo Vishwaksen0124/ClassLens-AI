@@ -1,0 +1,61 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    environment: &aws-env
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      AWS_PROFILE: ${AWS_PROFILE:-default}
+      HOME: /aws
+      AWS_SHARED_CREDENTIALS_FILE: /aws/.aws/credentials
+      AWS_CONFIG_FILE: /aws/.aws/config
+      CLASSLENS_DYNAMODB_ENDPOINT_URL: ${CLASSLENS_DYNAMODB_ENDPOINT_URL:-}
+      CLASSLENS_SQS_ENDPOINT_URL: ${CLASSLENS_SQS_ENDPOINT_URL:-}
+      CLASSLENS_UPLOADS_BUCKET: ${CLASSLENS_UPLOADS_BUCKET:?set CLASSLENS_UPLOADS_BUCKET to a private AWS S3 bucket}
+      CLASSLENS_JOBS_TABLE: ${CLASSLENS_JOBS_TABLE:?set CLASSLENS_JOBS_TABLE to the deployed DynamoDB table name}
+      CLASSLENS_QUEUE_URL: ${CLASSLENS_QUEUE_URL:?set CLASSLENS_QUEUE_URL to the deployed SQS queue URL}
+      BEDROCK_MODEL_ID: ${BEDROCK_MODEL_ID:-google.gemma-4-31b}
+      BEDROCK_MANTLE_REGION: ${BEDROCK_MANTLE_REGION:-us-east-2}
+      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-500}
+      MAX_DURATION_SECONDS: ${MAX_DURATION_SECONDS:-10800}
+      FRAME_INTERVAL_SECONDS: ${FRAME_INTERVAL_SECONDS:-8}
+      MAX_FRAMES: ${MAX_FRAMES:-48}
+      RETENTION_DAYS: ${RETENTION_DAYS:-7}
+      ALLOWED_ORIGINS: http://localhost:8501
+    user: "${LOCAL_UID:-1000}:${LOCAL_GID:-1000}"
+    volumes:
+      - ${HOME}/.aws:/aws/.aws:ro
+      - ${HOME}/.aws/login/cache:/aws/.aws/login/cache:rw
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.ui
+    environment:
+      CLASSLENS_API_URL: http://api:8000
+      CLASSLENS_PUBLIC_API_URL: http://localhost:8000
+    ports:
+      - "8501:8501"
+    depends_on:
+      api:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: .
+      dockerfile: worker/Dockerfile
+    environment:
+      <<: *aws-env
+      CLASSLENS_DYNAMODB_ENDPOINT_URL: ${CLASSLENS_DYNAMODB_ENDPOINT_URL:-}
+      CLASSLENS_SQS_ENDPOINT_URL: ${CLASSLENS_SQS_ENDPOINT_URL:-}
+    volumes:
+      - ${HOME}/.aws:/aws/.aws:ro
+      - ${HOME}/.aws/login/cache:/aws/.aws/login/cache:rw
+    user: "${LOCAL_UID:-1000}:${LOCAL_GID:-1000}"

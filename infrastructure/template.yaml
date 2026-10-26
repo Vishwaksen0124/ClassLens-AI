@@ -1,0 +1,261 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: ClassLens private media storage, durable job state, SQS queue, and container-image Lambda worker.
+
+Parameters:
+  WorkerImageUri:
+    Type: String
+    Description: Immutable ECR image URI for the ClassLens Lambda worker.
+  BedrockModelId:
+    Type: String
+    Default: google.gemma-4-31b
+    Description: Enabled model ID served by Amazon Bedrock Mantle.
+  BedrockMantleRegion:
+    Type: String
+    Default: us-east-2
+    Description: AWS Region serving the selected Bedrock Mantle model.
+  RetentionDays:
+    Type: Number
+    Default: 7
+    MinValue: 1
+    MaxValue: 365
+  MaxDurationSeconds:
+    Type: Number
+    Default: 10800
+  FrameIntervalSeconds:
+    Type: Number
+    Default: 8
+
+Resources:
+  VideoBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireUploadedVideos
+            Status: Enabled
+            Prefix: uploads/
+            ExpirationInDays: !Ref RetentionDays
+          - Id: ExpireAssessmentReports
+            Status: Enabled
+            Prefix: results/
+            ExpirationInDays: !Ref RetentionDays
+          - Id: ExpireTranscripts
+            Status: Enabled
+            Prefix: transcripts/
+            ExpirationInDays: !Ref RetentionDays
+          - Id: ExpireSampledFrames
+            Status: Enabled
+            Prefix: frames/
+            ExpirationInDays: !Ref RetentionDays
+          - Id: ExpireGeneratedDocuments
+            Status: Enabled
+            Prefix: documents/
+            ExpirationInDays: !Ref RetentionDays
+      Tags:
+        - Key: Application
+          Value: ClassLens
+
+  VideoBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref VideoBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowTranscribeToLocateBucket
+            Effect: Allow
+            Principal:
+              Service: transcribe.amazonaws.com
+            Action:
+              - s3:GetBucketLocation
+              - s3:ListBucket
+            Resource: !GetAtt VideoBucket.Arn
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+              ArnLike:
+                aws:SourceArn: !Sub 'arn:${AWS::Partition}:transcribe:${AWS::Region}:${AWS::AccountId}:transcription-job/*'
+          - Sid: AllowTranscribeToReadUploadedMedia
+            Effect: Allow
+            Principal:
+              Service: transcribe.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub '${VideoBucket.Arn}/uploads/*'
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+              ArnLike:
+                aws:SourceArn: !Sub 'arn:${AWS::Partition}:transcribe:${AWS::Region}:${AWS::AccountId}:transcription-job/*'
+          - Sid: AllowTranscribeToWriteJobTranscript
+            Effect: Allow
+            Principal:
+              Service: transcribe.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub '${VideoBucket.Arn}/transcripts/*'
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+              ArnLike:
+                aws:SourceArn: !Sub 'arn:${AWS::Partition}:transcribe:${AWS::Region}:${AWS::AccountId}:transcription-job/*'
+
+  JobsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: job_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: job_id
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
+      SSESpecification:
+        SSEEnabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+
+  DeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      MessageRetentionPeriod: 1209600
+      SqsManagedSseEnabled: true
+
+  JobsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      VisibilityTimeout: 5400
+      MessageRetentionPeriod: 345600
+      SqsManagedSseEnabled: true
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt DeadLetterQueue.Arn
+        maxReceiveCount: 3
+
+  WorkerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      PackageType: Image
+      ImageUri: !Ref WorkerImageUri
+      Architectures: [x86_64]
+      Timeout: 900
+      MemorySize: 3008
+      EphemeralStorage:
+        Size: 10240
+      ReservedConcurrentExecutions: 1
+      Environment:
+        Variables:
+          CLASSLENS_UPLOADS_BUCKET: !Ref VideoBucket
+          CLASSLENS_JOBS_TABLE: !Ref JobsTable
+          CLASSLENS_QUEUE_URL: !Ref JobsQueue
+          BEDROCK_MODEL_ID: !Ref BedrockModelId
+          BEDROCK_MANTLE_REGION: !Ref BedrockMantleRegion
+          MAX_DURATION_SECONDS: !Ref MaxDurationSeconds
+          FRAME_INTERVAL_SECONDS: !Ref FrameIntervalSeconds
+          RETENTION_DAYS: !Ref RetentionDays
+      Events:
+        QueueEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt JobsQueue.Arn
+            BatchSize: 1
+            FunctionResponseTypes: [ReportBatchItemFailures]
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action: [s3:GetObject]
+              Resource: !Sub '${VideoBucket.Arn}/uploads/*'
+            - Effect: Allow
+              Action: [s3:GetBucketLocation, s3:ListBucket]
+              Resource: !GetAtt VideoBucket.Arn
+            - Effect: Allow
+              Action: [s3:PutObject]
+              Resource: !Sub '${VideoBucket.Arn}/transcripts/*'
+            - Effect: Allow
+              Action: [s3:PutObject]
+              Resource: !Sub '${VideoBucket.Arn}/results/*'
+            - Effect: Allow
+              Action: [s3:PutObject]
+              Resource: !Sub '${VideoBucket.Arn}/frames/*'
+            - Effect: Allow
+              Action: [s3:GetObject]
+              Resource: !Sub '${VideoBucket.Arn}/transcripts/*'
+            - Effect: Allow
+              Action: [dynamodb:GetItem, dynamodb:UpdateItem]
+              Resource: !GetAtt JobsTable.Arn
+            - Effect: Allow
+              Action: [sqs:SendMessage]
+              Resource: !GetAtt JobsQueue.Arn
+            - Effect: Allow
+              Action: [transcribe:StartTranscriptionJob]
+              Resource: '*'
+              Condition:
+                StringEquals:
+                  transcribe:OutputBucketName: !Ref VideoBucket
+                StringLike:
+                  transcribe:OutputKey: transcripts/*
+            - Effect: Allow
+              Action: [transcribe:GetTranscriptionJob]
+              Resource: !Sub 'arn:${AWS::Partition}:transcribe:${AWS::Region}:${AWS::AccountId}:transcription-job/classlens-*'
+            - Effect: Allow
+              Action: [bedrock-mantle:CreateInference]
+              Resource: !Sub 'arn:${AWS::Partition}:bedrock-mantle:${BedrockMantleRegion}:${AWS::AccountId}:project/default'
+              Condition:
+                StringEquals:
+                  bedrock-mantle:Model: !Ref BedrockModelId
+            - Effect: Allow
+              Action: [bedrock-mantle:ListModels]
+              Resource: !Sub 'arn:${AWS::Partition}:bedrock-mantle:${BedrockMantleRegion}:${AWS::AccountId}:project/default'
+            - Effect: Allow
+              Action: [bedrock-mantle:CallWithBearerToken]
+              Resource: '*'
+              Condition:
+                StringEquals:
+                  bedrock-mantle:BearerTokenType: SHORT_TERM
+      Tags:
+        Application: ClassLens
+
+  TranscribeCompletionRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: Resume ClassLens processing when Amazon Transcribe finishes.
+      EventPattern:
+        source: [aws.transcribe]
+        detail-type: [Transcribe Job State Change]
+        detail:
+          TranscriptionJobStatus: [COMPLETED, FAILED]
+      State: ENABLED
+      Targets:
+        - Id: ClassLensWorker
+          Arn: !GetAtt WorkerFunction.Arn
+
+  AllowEventBridgeToInvokeWorker:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref WorkerFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt TranscribeCompletionRule.Arn
+
+Outputs:
+  VideoBucketName:
+    Value: !Ref VideoBucket
+  JobsTableName:
+    Value: !Ref JobsTable
+  JobsQueueUrl:
+    Value: !Ref JobsQueue
+  JobsQueueArn:
+    Value: !GetAtt JobsQueue.Arn
+  WorkerFunctionName:
+    Value: !Ref WorkerFunction

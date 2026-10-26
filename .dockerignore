@@ -1,0 +1,11 @@
+.git
+.env
+.aws
+.venv
+__pycache__
+.pytest_cache
+localstack-data
+uploads
+frames
+*.mp4
+*.webm

@@ -1,0 +1,282 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: ClassLens Streamlit and FastAPI containers on ECS Fargate behind an Application Load Balancer.
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  PublicSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Public subnets for the internet-facing load balancer.
+  ServiceSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Public subnets with an internet gateway route; Fargate tasks receive public IPs for outbound AWS access.
+  ClusterArn:
+    Type: String
+  TaskExecutionRoleArn:
+    Type: String
+    Default: ''
+    Description: Optional existing ECS execution role ARN. Leave blank to create one.
+  ApiImageUri:
+    Type: String
+  UiImageUri:
+    Type: String
+  VideoBucketName:
+    Type: String
+  JobsTableName:
+    Type: String
+  JobsQueueUrl:
+    Type: String
+  JobsQueueArn:
+    Type: String
+  BedrockModelId:
+    Type: String
+    Default: google.gemma-4-31b
+  BedrockMantleRegion:
+    Type: String
+    Default: us-east-2
+  AllowedOrigins:
+    Type: String
+    Description: Comma-separated allowed browser origins, for example https://lessons.example.edu.
+
+Conditions:
+  CreateExecutionRole: !Equals [!Ref TaskExecutionRoleArn, '']
+
+Resources:
+  LoadBalancerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Public HTTP ingress for ClassLens.
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+
+  ServiceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Permit load balancer access to the ClassLens containers.
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 8501
+          ToPort: 8501
+          SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup
+        - IpProtocol: tcp
+          FromPort: 8000
+          ToPort: 8000
+          SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Scheme: internet-facing
+      Type: application
+      Subnets: !Ref PublicSubnetIds
+      SecurityGroups: [!Ref LoadBalancerSecurityGroup]
+      LoadBalancerAttributes:
+        - Key: idle_timeout.timeout_seconds
+          Value: '3600'
+
+  ExecutionRole:
+    Type: AWS::IAM::Role
+    Condition: CreateExecutionRole
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  WebTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: ClassLensApiAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [s3:PutObject]
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::${VideoBucketName}/uploads/*'
+              - Effect: Allow
+                Action: [s3:GetObject]
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::${VideoBucketName}/results/*'
+              - Effect: Allow
+                Action: [s3:GetObject]
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::${VideoBucketName}/frames/*'
+              - Effect: Allow
+                Action: [s3:PutObject, s3:GetObject]
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::${VideoBucketName}/documents/*'
+              - Effect: Allow
+                Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:UpdateItem]
+                Resource: !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${JobsTableName}'
+              - Effect: Allow
+                Action: [sqs:SendMessage]
+                Resource: !Ref JobsQueueArn
+              - Effect: Allow
+                Action: [bedrock-mantle:CreateInference]
+                Resource: !Sub 'arn:${AWS::Partition}:bedrock-mantle:${BedrockMantleRegion}:${AWS::AccountId}:project/default'
+                Condition:
+                  StringEquals:
+                    bedrock-mantle:Model: !Ref BedrockModelId
+              - Effect: Allow
+                Action: [bedrock-mantle:CallWithBearerToken]
+                Resource: '*'
+
+  ClassLensLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /ecs/classlens
+      RetentionInDays: 30
+
+  UiTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      VpcId: !Ref VpcId
+      TargetType: ip
+      Port: 8501
+      Protocol: HTTP
+      HealthCheckPath: /_stcore/health
+      Matcher:
+        HttpCode: '200'
+
+  ApiTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      VpcId: !Ref VpcId
+      TargetType: ip
+      Port: 8000
+      Protocol: HTTP
+      HealthCheckPath: /health
+      Matcher:
+        HttpCode: '200'
+
+  HttpListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref UiTargetGroup
+
+  ApiListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      ListenerArn: !Ref HttpListener
+      Priority: 10
+      Conditions:
+        - Field: path-pattern
+          Values: [/health, /jobs*, /agent, /docs*, /openapi.json]
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref ApiTargetGroup
+
+  WebTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: classlens-web
+      RequiresCompatibilities: [FARGATE]
+      NetworkMode: awsvpc
+      Cpu: '1024'
+      Memory: '4096'
+      ExecutionRoleArn: !If [CreateExecutionRole, !GetAtt ExecutionRole.Arn, !Ref TaskExecutionRoleArn]
+      TaskRoleArn: !GetAtt WebTaskRole.Arn
+      ContainerDefinitions:
+        - Name: api
+          Image: !Ref ApiImageUri
+          Essential: true
+          PortMappings:
+            - ContainerPort: 8000
+              Protocol: tcp
+          Environment:
+            - Name: AWS_REGION
+              Value: !Ref AWS::Region
+            - Name: CLASSLENS_UPLOADS_BUCKET
+              Value: !Ref VideoBucketName
+            - Name: CLASSLENS_JOBS_TABLE
+              Value: !Ref JobsTableName
+            - Name: CLASSLENS_QUEUE_URL
+              Value: !Ref JobsQueueUrl
+            - Name: BEDROCK_MODEL_ID
+              Value: !Ref BedrockModelId
+            - Name: BEDROCK_MANTLE_REGION
+              Value: !Ref BedrockMantleRegion
+            - Name: ALLOWED_ORIGINS
+              Value: !Ref AllowedOrigins
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: /ecs/classlens
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: api
+        - Name: frontend
+          Image: !Ref UiImageUri
+          Essential: true
+          PortMappings:
+            - ContainerPort: 8501
+              Protocol: tcp
+          Environment:
+            - Name: CLASSLENS_API_URL
+              Value: http://127.0.0.1:8000
+            - Name: CLASSLENS_PUBLIC_API_URL
+              Value: !Sub 'http://${ApplicationLoadBalancer.DNSName}'
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: /ecs/classlens
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: frontend
+
+  WebService:
+    Type: AWS::ECS::Service
+    DependsOn: [HttpListener, ApiListenerRule]
+    Properties:
+      ServiceName: classlens-web
+      Cluster: !Ref ClusterArn
+      TaskDefinition: !Ref WebTaskDefinition
+      DesiredCount: 1
+      LaunchType: FARGATE
+      HealthCheckGracePeriodSeconds: 120
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          Subnets: !Ref ServiceSubnetIds
+          SecurityGroups: [!Ref ServiceSecurityGroup]
+      LoadBalancers:
+        - ContainerName: frontend
+          ContainerPort: 8501
+          TargetGroupArn: !Ref UiTargetGroup
+        - ContainerName: api
+          ContainerPort: 8000
+          TargetGroupArn: !Ref ApiTargetGroup
+
+Outputs:
+  ApplicationUrl:
+    Value: !Sub 'http://${ApplicationLoadBalancer.DNSName}'
+  ApiHealthUrl:
+    Value: !Sub 'http://${ApplicationLoadBalancer.DNSName}/health'
+  WebTaskRoleArn:
+    Value: !GetAtt WebTaskRole.Arn
+  ExecutionRoleArn:
+    Value: !If [CreateExecutionRole, !GetAtt ExecutionRole.Arn, !Ref TaskExecutionRoleArn]
